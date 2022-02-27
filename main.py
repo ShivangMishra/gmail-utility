@@ -8,8 +8,8 @@ from googleapiclient.errors import HttpError
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+messages = [] # all messages
 
-messages = []
 def main():
     
     creds = None
@@ -37,7 +37,13 @@ def main():
     input('Press Enter to start loading messages.')
     
     loadAllMessages(service)
-
+    
+    sortedSenders = getSortedSenders() 
+    print('\nSorted list of senders\n')
+   
+    for item in sortedSenders:
+        print(item)
+    
 
 def loadAllMessages(service, user_id='me'):
     msg_list = [] # only stores message ids and thread ids, not the complete messages
@@ -72,7 +78,7 @@ def loadAllMessages(service, user_id='me'):
         
         m_id = msg_list[index]['id']
         request = service.users().messages().get(userId=user_id,id=m_id) 
-        batch.add(request=request, callback=handle_response)
+        batch.add(request=request, callback=saveMessage)
         requestsInBatch += 1
         # execute batch when the batch is filled enough or no more ids are left
         if requestsInBatch == maxRequestsPerBatch or index == len(msg_list) - 1:
@@ -85,14 +91,37 @@ def loadAllMessages(service, user_id='me'):
     print('Number of Retrived messages : ' + str(len(messages)))
     # print(senders)
 
-def handle_response(request_id, response, exception):
+
+def saveMessage(request_id, response, exception):
     if exception is not None:
         print('Error occured for request id  = ' + str(request_id))
         input('Press Enter to continue >')
     
     message = response
     messages.append(message)
- 
+
+
+def getSortedSenders():
+    """"returns a list of items of form (sender, messagesCount)
+    sorted in decreasing order of messagesCount"""
+    sendersMap = {}
+    print('\nCounting emails per sender...')
+    for msg in messages:
+        msg_id = msg['id']
+        msg_headers = msg['payload']['headers']
+        msg_from = filter(lambda hdr: hdr['name'] == 'From', msg_headers)
+        msg_from = list(msg_from)[0]
+        sender = msg_from['value']
+        if sender in sendersMap:
+            sendersMap[sender] +=1
+        else:
+            sendersMap[sender] = 1
+            
+    print('Sorting senders on the basis of number of emails...')
+    sortedSenders = sorted(sendersMap.items(), key=lambda item:-int(item[1]))
+    
+    return sortedSenders
+
 
 if __name__ == '__main__':
     main()
