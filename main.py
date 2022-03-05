@@ -6,65 +6,76 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+import pickle
+
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+MSG_FILENAME = 'msgs.dat'
 MSG_ID_FILENAME = 'mgs_ids.dat'
-messages = [] # all messages
 
-def main():
+def main(): 
+    creds = loadCreds()
+    # Call the Gmail API
+    service = build('gmail', 'v1', credentials=creds)
     
+    print('Authenticated successfully')
+    prompt = 'Enter 1 to load messages from gmail api.\nEnter 2 to load messages from local backup.\n? '
+      
+    choice = input(prompt)
+    if choice == '1':
+        msgList = loadMsgList(service)
+        msgIds = [msg['id'] for msg in msgList]
+        #saveMessageIdsToFile(msgIds)
+        messages = loadMessages(msgIds, service)
+        saveMessagesToFile(messages)
+
+    elif choice == '2':
+        messages = loadMessagesFromFile()
+
+
+    while True:
+        choice = input('Enter 1 to sort the senders.\n Enter 2 to PERMANENTLY delete\nEnter 3 to Exit\n? ')
+        if choice == '1':
+            sortedSenders = getSortedSenders(messages) 
+            print('\nSorted list of senders\n')
+            for item in sortedSenders:
+                print(item)
+    
+        elif choice == '2':
+            sender = input("Enter the sender's email address : ")
+            deleteMessages(service, messages=messages, sender=sender)
+
+        elif choice == '3':
+            return
+
+def loadCreds(tokenFileName='token.json', credsFileName='credentials.json'):
     creds = None
     # The file token.json stores the user's access and refresh tokens, and is
     # created automatically when the authorization flow completes for the first
     # time.
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if os.path.exists(tokenFileName):
+        creds = Credentials.from_authorized_user_file(tokenFileName, SCOPES)
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
+                credsFileName, SCOPES)
             creds = flow.run_local_server(port=0)
         # Save the credentials for the next run
-        with open('token.json', 'w') as token:
+        with open(tokenFileName, 'w') as token:
             token.write(creds.to_json())
-
-    # Call the Gmail API
-    service = build('gmail', 'v1', credentials=creds)
-    
-    print('Authenticated successfully')
-    prompt = 'Press 1 to load message ids from gmail api.\nPress 2 to load message ids from local backup.\n'
-      
-    msgIds = []
-    choice = int(input(prompt))
-    if choice == 1:
-        msgList = loadMsgList(service)
-        msgIds = [msg['id'] for msg in msgList]
-        saveMessageIdsToFile(msgIds)
-
-    if choice == 2:
-        msgIds = loadMessageIdsFromFile()
-    
-    input('Press Enter to load messages using the message ids >')
-    messages = loadMessages(msgIds, service)
-    
-    input('Press Enter to sort senders ')
-    sortedSenders = getSortedSenders() 
-    print('\nSorted list of senders\n')
-   
-    for item in sortedSenders:
-        print(item)
-    
+    return creds
 
 def loadMsgList(service, user_id='me'):
+    """loads all the message ids from the Gmail API."""
     msg_list = [] # only stores message ids and thread ids, not the complete messages
     maxResultsPerPage = 50 # can be upto 500, I have kept it small for simplicity
     
     request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage)
     response = request.execute()
-    
+    print("Loading message ids...")
     msg_list.extend(response['messages']) 
     
     nextPageToken = response['nextPageToken'] # used to get the next page of the results
@@ -74,7 +85,7 @@ def loadMsgList(service, user_id='me'):
         request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage, pageToken=nextPageToken)
         response = request.execute()
         msg_list.extend(response['messages'])
-        print(str(len(msg_list)))
+        print('Loaded message ids : ' + str(len(msg_list)))
         if not 'nextPageToken' in response:
             break
         nextPageToken = response['nextPageToken']
@@ -82,64 +93,60 @@ def loadMsgList(service, user_id='me'):
     print('Number of retrieved message ids : ' + str(len(msg_list)))
     return msg_list
 
-
 def loadMessages(msgIds, service, user_id='me'):
+    """ Loads the messages from Gmail API. Returns a dictionary with (key, value) = (message id, message object) """
     maxRequestsPerBatch = 45 # max limit is 100, 50+ is not considered safe.
     # get the messages in batches
     batch=service.new_batch_http_request()
     requestsInBatch = 0 
+    messages = {}
+    def addMessage(message):
+        messages[message['id']] = message
+    
     for index in range(len(msgIds)):
         #print('Preparing request for message number ' + str(index) + ' ...')
         
         m_id = msgIds[index]
         request = service.users().messages().get(userId=user_id,id=m_id) 
-        batch.add(request=request, callback=saveMessage)
+        batch.add(request=request, callback=lambda request_id, response, exception:addMessage(response))
         requestsInBatch += 1
         # execute batch when the batch is filled enough or no more ids are left
         if requestsInBatch == maxRequestsPerBatch or index == len(msgIds) - 1:
-            print('executing batch request...')
+            print('Executing batch with ' + str(requestsInBatch) + ' requests...')
             batch.execute()
+            print('Batch executed successfully. Loaded ' + str(requestsInBatch) + ' messages')
+            print(' Total messages loaded : ' + str(index + 1) + '\n')
             requestsInBatch = 0
             batch = service.new_batch_http_request()
-            print('Batch executed successfully\n')
-    
-    print('Number of Retrived messages : ' + str(len(messages)))
+            
+            
+    print('Number of Retrieved messages : ' + str(len(messages)))
     return messages
     # print(senders)
 
-def saveMessageIdsToFile(msgIds, filename=MSG_ID_FILENAME):
-    print('Saving message ids locally in file : ' + filename)
-    with open(filename,'w') as f:
-        for id in msgIds:
-            f.write(str(id))
+def saveMessagesToFile(msgs, filename=MSG_FILENAME):
+    with open(filename, 'wb') as f:
+        pickle.dump(len(msgs), f)
+        pickle.dump(msgs, f)
+        # for i in range(len(msgs)):
+        #     pickle.dump(msgs[i], f)
+    print(str(len(msgs)) + ' Messages saved successfully to file : ' + filename)
 
+def loadMessagesFromFile(filename=MSG_FILENAME):
+    msgs = []
+    with open(filename, 'rb') as f:
+        n = int(pickle.load(f))
+        msgs = pickle.load(f)
+    print(str(len(msgs)) + ' Messages loaded successfully from file : ' + filename)
+    return msgs
 
-def loadMessageIdsFromFile(filename=MSG_ID_FILENAME):
-    msgIds = []
-    with open(filename, "r") as f:
-        while True:
-            try:
-                msgIds.append(f.readline())
-            except EOFError:
-                print('\nError occured while reading file\n')
-                break
-    return msgIds
-
-def saveMessage(request_id, response, exception):
-    if exception is not None:
-        print('Error occured for request id  = ' + str(request_id))
-        input('Press Enter to continue >')
-    
-    message = response
-    messages.append(message)
-
-
-def getSortedSenders():
+def getSortedSenders(messages):
     """"returns a list of items of form (sender, messagesCount)
     sorted in decreasing order of messagesCount"""
     sendersMap = {}
     print('\nCounting emails per sender...')
-    for msg in messages:
+    print(str(len(messages)))
+    for msg in messages.values():
         msg_id = msg['id']
         msg_headers = msg['payload']['headers']
         msg_from = filter(lambda hdr: hdr['name'] == 'From', msg_headers)
@@ -155,6 +162,39 @@ def getSortedSenders():
     
     return sortedSenders
 
+def deleteMessages(service, user_id='me', messages={}, sender=''):
+    msgIds = getMessageIds(messages, sender)
+    if sender == '':
+        print('SENDER NOT SPECIFIED')
+        return
+    if len(msgIds) == 0:
+        print('No messages from sender : ' + str(sender))
+        return
+        
+    print('PERMANENTLY Deleting all messages(' + str(len(msgIds)) + ') from sender : ' + sender)
+    request = service.users().messages().batchDelete(userId=user_id, body={'ids': msgIds}) 
+    # executing delete request requires the highest authority(scope) in OAuth client
+    # Please see https://developers.google.com/gmail/api/auth/scopes
+    request.execute() 
+    for msgId in msgIds:
+        messages.pop(msgId, None) # using hashmap, reduced time complexity
+    saveMessagesToFile(messages)
+    print('Successfully deleted all messages from sender : ' + sender)
+
+def getMessageIds(messages, sender):
+    """returns the message ids of the messages sent by the 'sender' email address"""
+    msgIds = []
+    for msg in messages.values():
+        msg_id = msg['id']
+        msg_headers = msg['payload']['headers']
+        msg_from = filter(lambda hdr: hdr['name'] == 'From', msg_headers)
+        msg_from = list(msg_from)[0]
+        senderData = msg_from['value']
+        
+        if "<" + sender + ">" in senderData: # the senderData contains email in the form <email address>
+            msgIds.append(msg_id)
+
+    return msgIds
 
 if __name__ == '__main__':
     main()
