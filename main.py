@@ -22,16 +22,24 @@ def main():
     prompt = 'Enter 1 to load messages from gmail api.\nEnter 2 to load messages from local backup.\n? '
       
     choice = input(prompt)
-    if choice == '1':
-        msgList = loadMsgList(service)
-        msgIds = [msg['id'] for msg in msgList]
+    msgList = loadMsgList(service)
+    msgIds = [msg['id'] for msg in msgList]
+    if choice == '1':    
+        
         #saveMessageIdsToFile(msgIds)
         messages = loadMessages(msgIds, service)
         saveMessagesToFile(messages)
 
     elif choice == '2':
         messages = loadMessagesFromFile()
-
+        if(len(messages) < len(msgIds)):
+            print('Incomplete backup. Loading the missing messages from Gmail API...')
+            toBeLoaded = [msgId for msgId in msgIds if not msgId in messages]
+            print('Number of messages to be loaded : ' + str(len(toBeLoaded)))
+            messages |= loadMessages(toBeLoaded, service)
+            print('Loaded missing messages. Updating local databse...')
+            saveMessagesToFile(messages)
+            print('Updated.\n')
 
     while True:
         choice = input('Enter 1 to sort the senders.\n Enter 2 to PERMANENTLY delete\nEnter 3 to Exit\n? ')
@@ -96,10 +104,13 @@ def loadMsgList(service, user_id='me'):
 def loadMessages(msgIds, service, user_id='me'):
     """ Loads the messages from Gmail API. Returns a dictionary with (key, value) = (message id, message object) """
     maxRequestsPerBatch = 45 # max limit is 100, 50+ is not considered safe.
-    # get the messages in batches
-    batch=service.new_batch_http_request()
+    saveStep = 10000 # save messages after each 10k messages
+    
+    batch=service.new_batch_http_request() # get the messages in batches
     requestsInBatch = 0 
-    messages = {}
+    toBeSaved = 0 # number of messages which have not been saved. Messages are saved when toBeSaved >= saveStep
+    messages = {} 
+
     def addMessage(message):
         messages[message['id']] = message
     
@@ -114,8 +125,14 @@ def loadMessages(msgIds, service, user_id='me'):
         if requestsInBatch == maxRequestsPerBatch or index == len(msgIds) - 1:
             print('Executing batch with ' + str(requestsInBatch) + ' requests...')
             batch.execute()
+            toBeSaved += requestsInBatch
             print('Batch executed successfully. Loaded ' + str(requestsInBatch) + ' messages')
             print(' Total messages loaded : ' + str(index + 1) + '\n')
+            if toBeSaved >= saveStep:
+                print('Saving current progress...')
+                saveMessagesToFile(messages)
+                print('Saved current progress.\n')
+                toBeSaved = 0
             requestsInBatch = 0
             batch = service.new_batch_http_request()
             
@@ -130,7 +147,7 @@ def saveMessagesToFile(msgs, filename=MSG_FILENAME):
         pickle.dump(msgs, f)
         # for i in range(len(msgs)):
         #     pickle.dump(msgs[i], f)
-    print(str(len(msgs)) + ' Messages saved successfully to file : ' + filename)
+    print('\n' + str(len(msgs)) + ' Messages saved successfully to file : ' + filename)
 
 def loadMessagesFromFile(filename=MSG_FILENAME):
     msgs = []
