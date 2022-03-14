@@ -12,6 +12,8 @@ import pickle
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 MSG_FILENAME = 'msgs.dat'
 MSG_ID_FILENAME = 'mgs_ids.dat'
+LOG_FILE_NAME = 'gmai-log.txt'
+
 
 def main(): 
     creds = loadCreds()
@@ -83,13 +85,13 @@ def loadCreds(tokenFileName='token.json', credsFileName='credentials.json'):
 def loadMsgList(service, user_id='me'):
     """loads all the message ids from the Gmail API."""
     msg_list = [] # only stores message ids and thread ids, not the complete messages
-    maxResultsPerPage = 50 # can be upto 500, I have kept it small for simplicity
+    maxResultsPerPage = 450 # can be upto 500, I have kept it small for simplicity
     
     request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage)
     response = request.execute()
     print("Loading message ids...")
     msg_list.extend(response['messages']) 
-    
+    print('Loaded message ids : ' + str(len(msg_list)))
     nextPageToken = response['nextPageToken'] # used to get the next page of the results
 
     # get the message ids
@@ -127,17 +129,15 @@ def loadMessages(msgIds, service, user_id='me'):
     batch=service.new_batch_http_request() # get the messages in batches
     requestsInBatch = 0 
     toBeSaved = 0 # number of messages which have not been saved. Messages are saved when toBeSaved >= saveStep
-    messages = {} 
-
-    def addMessage(message):
-        messages[message['id']] = message
+    messages = {} # to store the retrieved messages
+    failedIds = [] # to store ids of the failed messages
     
     for index in range(len(msgIds)):
         #print('Preparing request for message number ' + str(index) + ' ...')
         
         m_id = msgIds[index]
         request = service.users().messages().get(userId=user_id,id=m_id) 
-        batch.add(request=request, callback=lambda request_id, response, exception:addMessage(response))
+        batch.add(request=request, callback=lambda request_id, response, exception:handleResponse(request_id, response, exception, messages, failedIds))
         requestsInBatch += 1
         # execute batch when the batch is filled enough or no more ids are left
         if requestsInBatch == maxRequestsPerBatch or index == len(msgIds) - 1:
@@ -145,7 +145,7 @@ def loadMessages(msgIds, service, user_id='me'):
             batch.execute()
             toBeSaved += requestsInBatch
             print('Batch executed successfully. Loaded ' + str(requestsInBatch) + ' messages')
-            print(' Total messages loaded : ' + str(index + 1) + '\n')
+            print(' Total messages loaded : ' + str(len(messages)) + '\n')
             if toBeSaved >= saveStep:
                 print('Saving current progress...')
                 saveMessagesToFile(messages)
@@ -156,8 +156,18 @@ def loadMessages(msgIds, service, user_id='me'):
             
             
     print('Number of Retrieved messages : ' + str(len(messages)))
+    print('Number of failed messages : ' + str(len(failedIds)))
     return messages
     # print(senders)
+
+def handleResponse(request_id, response, exception, messages, failedIds):
+    if exception is not None:
+        with open(LOG_FILE_NAME, 'a') as logfile:
+            logfile.write(str(request_id) + "\t" + str(exception) + '\n')
+        failedIds.append(request_id)
+        return
+    messages[response['id']] = response        
+    
 
 def saveMessagesToFile(msgs, filename=MSG_FILENAME):
     with open(filename, 'wb') as f:
