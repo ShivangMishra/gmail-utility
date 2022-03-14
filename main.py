@@ -17,16 +17,20 @@ def main():
     creds = loadCreds()
     # Call the Gmail API
     service = build('gmail', 'v1', credentials=creds)
-    
     print('Authenticated successfully')
+    
+    prompt = 'Enter 1 to load message ids from gmail api.\nEnter 2 to load message ids from local backup.\n? '
+    choice  = input(prompt)
+    if choice == '1':
+        msgList = loadMsgList(service)
+        msgIds = [msg['id'] for msg in msgList]
+        saveMsgIdsToFile(msgIds)
+    elif choice == '2':
+        msgIds = loadMsgIdsFromFile()
+
     prompt = 'Enter 1 to load messages from gmail api.\nEnter 2 to load messages from local backup.\n? '
-      
     choice = input(prompt)
-    msgList = loadMsgList(service)
-    msgIds = [msg['id'] for msg in msgList]
     if choice == '1':    
-        
-        #saveMessageIdsToFile(msgIds)
         messages = loadMessages(msgIds, service)
         saveMessagesToFile(messages)
 
@@ -101,6 +105,20 @@ def loadMsgList(service, user_id='me'):
     print('Number of retrieved message ids : ' + str(len(msg_list)))
     return msg_list
 
+def saveMsgIdsToFile(msgIds, filename=MSG_ID_FILENAME):
+    with open(filename, 'wb') as f:
+        pickle.dump(msgIds, f)
+       
+    print('\n' + str(len(msgIds)) + ' Message Ids saved successfully to file : ' + filename)
+
+def loadMsgIdsFromFile(filename=MSG_ID_FILENAME):
+    msgIds = []
+    with open(filename, 'rb') as f:
+        msgIds = pickle.load(f)
+    print(str(len(msgIds)) + ' Message Ids loaded successfully from file : ' + filename)
+    return msgIds
+   
+
 def loadMessages(msgIds, service, user_id='me'):
     """ Loads the messages from Gmail API. Returns a dictionary with (key, value) = (message id, message object) """
     maxRequestsPerBatch = 45 # max limit is 100, 50+ is not considered safe.
@@ -150,7 +168,7 @@ def saveMessagesToFile(msgs, filename=MSG_FILENAME):
     print('\n' + str(len(msgs)) + ' Messages saved successfully to file : ' + filename)
 
 def loadMessagesFromFile(filename=MSG_FILENAME):
-    msgs = []
+    msgs = {}
     with open(filename, 'rb') as f:
         n = int(pickle.load(f))
         msgs = pickle.load(f)
