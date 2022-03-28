@@ -86,7 +86,7 @@ def loadMsgList(service, user_id='me'):
     """loads all the message ids from the Gmail API."""
     msg_list = [] # only stores message ids and thread ids, not the complete messages
     maxResultsPerPage = 450 # can be upto 500, I have kept it small for simplicity
-    
+    n = int(input('How many messages to load?'))
     request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage)
     response = request.execute()
     print("Loading message ids...")
@@ -95,7 +95,7 @@ def loadMsgList(service, user_id='me'):
     nextPageToken = response['nextPageToken'] # used to get the next page of the results
 
     # get the message ids
-    while nextPageToken is not None:
+    while nextPageToken is not None and len(msg_list) < n:
         request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage, pageToken=nextPageToken)
         response = request.execute()
         msg_list.extend(response['messages'])
