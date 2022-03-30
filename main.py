@@ -1,19 +1,21 @@
+import csv
 import os.path
-
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
 import pickle
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-MSG_FILENAME = 'msgs.dat'
-MSG_ID_FILENAME = 'mgs_ids.dat'
-LOG_FILE_NAME = 'gmai-log.txt'
 
+MSG_FILENAME = 'msgs.dat'
+MSG_ID_FILENAME = 'msg_ids.dat'
+LOG_FILE_NAME = 'gmail_log.txt'
+CSV_FILENAME = 'emails.csv'
+
+MAX_RESULTS_PER_PAGE = 450
 
 def main(): 
     creds = loadCreds()
@@ -47,8 +49,15 @@ def main():
             saveMessagesToFile(messages)
             print('Updated.\n')
 
+    prompt = '''
+    Enter 1 to sort the senders.
+    Enter 2 to PERMANENTLY delete.
+    Enter 3 to write all the loaded emails to csv.
+    Enter 4 to Exit.
+    ? ''' 
+    
     while True:
-        choice = input('Enter 1 to sort the senders.\n Enter 2 to PERMANENTLY delete\nEnter 3 to Exit\n? ')
+        choice = input(prompt)
         if choice == '1':
             sortedSenders = getSortedSenders(messages) 
             print('\nSorted list of senders\n')
@@ -60,7 +69,9 @@ def main():
             deleteMessages(service, messages=messages, sender=sender)
 
         elif choice == '3':
-            return
+            saveCSV(messages)
+        elif choice == '4':
+            exit()
 
 def loadCreds(tokenFileName='token.json', credsFileName='credentials.json'):
     creds = None
@@ -85,7 +96,7 @@ def loadCreds(tokenFileName='token.json', credsFileName='credentials.json'):
 def loadMsgList(service, user_id='me'):
     """loads all the message ids from the Gmail API."""
     msg_list = [] # only stores message ids and thread ids, not the complete messages
-    maxResultsPerPage = 450 # can be upto 500, I have kept it small for simplicity
+    maxResultsPerPage = MAX_RESULTS_PER_PAGE # can be upto 500, I have kept it small for simplicity
     n = int(input('How many messages to load?'))
     request = service.users().messages().list(userId=user_id, maxResults=maxResultsPerPage)
     response = request.execute()
@@ -119,7 +130,6 @@ def loadMsgIdsFromFile(filename=MSG_ID_FILENAME):
         msgIds = pickle.load(f)
     print(str(len(msgIds)) + ' Message Ids loaded successfully from file : ' + filename)
     return msgIds
-   
 
 def loadMessages(msgIds, service, user_id='me'):
     """ Loads the messages from Gmail API. Returns a dictionary with (key, value) = (message id, message object) """
@@ -161,14 +171,24 @@ def loadMessages(msgIds, service, user_id='me'):
     # print(senders)
 
 def handleResponse(request_id, response, exception, messages, failedIds):
-    if exception is not None:
-        with open(LOG_FILE_NAME, 'a') as logfile:
-            logfile.write(str(request_id) + "\t" + str(exception) + '\n')
-        failedIds.append(request_id)
+    if exception is None:
+        messages[response['id']] = response        
         return
-    messages[response['id']] = response        
     
-
+    failedIds.append(request_id)
+    # log exception to
+    with open(LOG_FILE_NAME, 'a') as logfile:
+        logfile.write(str(request_id) + "\t" + str(exception) + '\n')
+    
+        # API daily limit 
+    if exception[code] == 403 or  exception[code] == 429:
+        print('Daily Limit reached')
+        print('Saving progress...')
+        saveMessagesToFile(messages)
+        saveCSV(messages)
+        input('Press any key to exit...')
+        exit()  
+    
 def saveMessagesToFile(msgs, filename=MSG_FILENAME):
     with open(filename, 'wb') as f:
         pickle.dump(len(msgs), f)
@@ -176,6 +196,24 @@ def saveMessagesToFile(msgs, filename=MSG_FILENAME):
         # for i in range(len(msgs)):
         #     pickle.dump(msgs[i], f)
     print('\n' + str(len(msgs)) + ' Messages saved successfully to file : ' + filename)
+
+def saveCSV(messages, filename=CSV_FILENAME):
+    '''
+    messages dictionary is of the form {id:message}
+    each message is a Message object which in itself is like a dictionary 
+    '''
+    print('Saving csv file ' + filename + ' ...')
+    with open(filename, 'w', encoding='UTF8', newline='') as f:
+        
+        writer = csv.writer(f)
+        csvHeader = [hdr['name'] for hdr in list(messages.values())[0]['payload']['headers']]
+        writer.writerow(csvHeader)
+        for _, msg in messages.items():
+            payload = msg['payload']
+            hdrs = payload['headers']
+            row = [hdr['value'] for hdr in hdrs]
+            writer.writerow(row)
+    print('csv file saved successfully.\n')
 
 def loadMessagesFromFile(filename=MSG_FILENAME):
     msgs = {}
@@ -207,7 +245,7 @@ def getSortedSenders(messages):
     
     return sortedSenders
 
-def deleteMessages(service, user_id='me', messages={}, sender=''):
+def deleteMessages(service, user_id='me', messages, sender):
     msgIds = getMessageIds(messages, sender)
     if sender == '':
         print('SENDER NOT SPECIFIED')
@@ -234,8 +272,13 @@ def getMessageIds(messages, sender):
         msg_headers = msg['payload']['headers']
         msg_from = filter(lambda hdr: hdr['name'] == 'From', msg_headers)
         msg_from = list(msg_from)[0]
-        senderData = msg_from['value']
         
+        senderData = msg_from['value']
+        '''
+        Use the same approach to make filters for other headers...
+        The following link lists the parts and subparts of Message object
+        https://developers.google.com/gmail/api/reference/rest/v1/users.messages
+        '''
         if "<" + sender + ">" in senderData: # the senderData contains email in the form <email address>
             msgIds.append(msg_id)
 
